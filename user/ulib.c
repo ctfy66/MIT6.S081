@@ -70,6 +70,7 @@ gets(char *buf, int max)
   return buf;
 }
 
+// 打开路径n，获取stat信息给st，若失败返回-1
 int
 stat(const char *n, struct stat *st)
 {

@@ -30,11 +30,13 @@ ls(char *path)
   struct dirent de;
   struct stat st;
 
+  //调用open根据路径打开文件或目录
   if((fd = open(path, 0)) < 0){
     fprintf(2, "ls: cannot open %s\n", path);
     return;
   }
 
+  //call fstat() to get file or directory`s state
   if(fstat(fd, &st) < 0){
     fprintf(2, "ls: cannot stat %s\n", path);
     close(fd);
@@ -53,12 +55,16 @@ ls(char *path)
     }
     strcpy(buf, path);
     p = buf+strlen(buf);
+    // 在路径末尾加上 /, p加1依然指向路径末尾。
     *p++ = '/';
+    //一直读取目录下的元素信息，直到全部读完。信息春放在de中
     while(read(fd, &de, sizeof(de)) == sizeof(de)){
       if(de.inum == 0)
         continue;
+      // 将buf末尾添加文件或目录名，buf表示该目录下子文件的名称
       memmove(p, de.name, DIRSIZ);
       p[DIRSIZ] = 0;
+      //将buf路径对应的文件或目录的state信息传给st
       if(stat(buf, &st) < 0){
         printf("ls: cannot stat %s\n", buf);
         continue;
