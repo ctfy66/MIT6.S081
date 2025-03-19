@@ -166,6 +166,27 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
   }
   return 0;
 }
+static char* prefix[3] = {"..", ".. ..", ".. .. .."};
+void vmprint_rec(pagetable_t pagetable, int l) {
+  if (l > 2) {
+    return;
+  }
+  for (int i = 0; i < 512; i++) {
+    pte_t pte = pagetable[i];
+    // 合法则继续遍历
+    if (pte & PTE_V) {
+      uint64 pa = PTE2PA(pte);
+      printf("%s%d: pte %p pa %p\n", prefix[l], i, pte, pa);
+      vmprint_rec((pagetable_t)pa, l + 1);
+    }
+  }
+}
+void vmprint(pagetable_t pagetable) {
+  printf("page table %p\n", pagetable);
+  vmprint_rec(pagetable, 0);
+}
+
+
 
 // Remove npages of mappings starting from va. va must be
 // page-aligned. The mappings must exist.
@@ -180,10 +201,11 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
     panic("uvmunmap: not aligned");
 
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
-    if((pte = walk(pagetable, a, 0)) == 0)
-      panic("uvmunmap: walk");
+    if((pte = walk(pagetable, a, 0)) == 0) {
+      continue;
+    }
     if((*pte & PTE_V) == 0)
-      panic("uvmunmap: not mapped");
+      continue;
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
     if(do_free){
@@ -315,9 +337,13 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
-      panic("uvmcopy: pte should exist");
-    if((*pte & PTE_V) == 0)
-      panic("uvmcopy: page not present");
+      //panic("uvmcopy: pte should exist");
+      continue;
+    if((*pte & PTE_V) == 0) {
+        //panic("uvmcopy: page not present");
+        //added
+        continue;
+    }
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
     if((mem = kalloc()) == 0)
