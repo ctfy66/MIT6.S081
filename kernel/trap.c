@@ -65,9 +65,35 @@ usertrap(void)
     intr_on();
 
     syscall();
+    
+
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  } else if(r_scause() == 15){
+        uint64 va = PGROUNDDOWN(r_stval());
+        pte_t* pte = walk(p->pagetable, va, 0);
+        //determine whether pte is allcate by COW
+        if ((*pte & PTE_COW) == 0) {
+            p->killed = 1;
+            exit(-1);
+        }
+        //if so, allocate a new page and copy, map it to va.
+        char* mem = kalloc();
+        if (mem == 0) {
+            p->killed = 1;
+            exit(-1);
+        }
+        uint64 pa = PTE2PA(*pte);
+        memmove(mem, (void*)pa, PGSIZE);
+        int flags = (PTE_FLAGS(*pte) & ~PTE_COW) | PTE_W;
+        // Before mapping new page
+        uvmunmap(p->pagetable,va, 1, 1); 
+        if (mappages(p->pagetable, va, PGSIZE, (uint64)mem, flags) != 0) {
+            p->killed = 1;
+            exit(-1);
+        }
+  }
+  else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
@@ -80,6 +106,7 @@ usertrap(void)
   if(which_dev == 2)
     yield();
 
+
   usertrapret();
 }
 
@@ -90,6 +117,7 @@ void
 usertrapret(void)
 {
   struct proc *p = myproc();
+  
 
   // we're about to switch the destination of traps from
   // kerneltrap() to usertrap(), so turn off interrupts until
@@ -124,6 +152,7 @@ usertrapret(void)
   // jump to trampoline.S at the top of memory, which 
   // switches to the user page table, restores user registers,
   // and switches to user mode with sret.
+  
   uint64 fn = TRAMPOLINE + (userret - trampoline);
   ((void (*)(uint64,uint64))fn)(TRAPFRAME, satp);
 }

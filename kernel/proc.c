@@ -190,6 +190,7 @@ proc_pagetable(struct proc *p)
 void
 proc_freepagetable(pagetable_t pagetable, uint64 sz)
 {
+  
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
   uvmfree(pagetable, sz);
@@ -266,13 +267,14 @@ fork(void)
   if((np = allocproc()) == 0){
     return -1;
   }
-
+    
   // Copy user memory from parent to child.
   if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
     freeproc(np);
     release(&np->lock);
     return -1;
   }
+  
   np->sz = p->sz;
 
   np->parent = p;
@@ -296,6 +298,8 @@ fork(void)
   np->state = RUNNABLE;
 
   release(&np->lock);
+
+  
 
   return pid;
 }

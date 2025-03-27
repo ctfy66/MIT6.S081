@@ -21,13 +21,20 @@ struct run {
 struct {
   struct spinlock lock;
   struct run *freelist;
+  int sharedCount[PHYSTOP / PGSIZE];
 } kmem;
 
 void
 kinit()
 {
+    
   initlock(&kmem.lock, "kmem");
+  
+  for(int i = 0; i < PHYSTOP/PGSIZE; i++) {
+    kmem.sharedCount[i] = 0;
+  }
   freerange(end, (void*)PHYSTOP);
+  
 }
 
 void
@@ -50,7 +57,14 @@ kfree(void *pa)
 
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
-
+  acquire(&kmem.lock);
+  if (kmem.sharedCount[(uint64)pa / PGSIZE] > 1) {
+    kmem.sharedCount[(uint64)pa / PGSIZE] -= 1;
+    release(&kmem.lock);
+    return;
+  }
+  release(&kmem.lock);
+  
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
 
@@ -59,6 +73,7 @@ kfree(void *pa)
   acquire(&kmem.lock);
   r->next = kmem.freelist;
   kmem.freelist = r;
+  kmem.sharedCount[(uint64)pa / PGSIZE] = 0;
   release(&kmem.lock);
 }
 
@@ -72,11 +87,26 @@ kalloc(void)
 
   acquire(&kmem.lock);
   r = kmem.freelist;
-  if(r)
+  if(r) {
     kmem.freelist = r->next;
+    kmem.sharedCount[(uint64)r / PGSIZE] = 1;
+  }
   release(&kmem.lock);
 
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
+}
+
+void sharedCountPlusOne(uint64 pa) {
+    if(((uint64)pa % PGSIZE) != 0 || (uint64)pa >= PHYSTOP)
+        panic("sharedCountPlusOne");
+    
+    acquire(&kmem.lock);
+    kmem.sharedCount[pa / PGSIZE] += 1;
+    release(&kmem.lock);
+}
+
+int holdingKmemLock() {
+    return holding(&kmem.lock);
 }
