@@ -333,8 +333,6 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     }
     //plus sharedCount of page pa by 1
     sharedCountPlusOne(pa);
-    
-
   }
   return 0;
 
@@ -356,6 +354,42 @@ uvmclear(pagetable_t pagetable, uint64 va)
   *pte &= ~PTE_U;
 }
 
+int cow(pagetable_t pagetable, uint64 va) {
+    if (va >= MAXVA) {
+      return -1;
+    }
+    // 找到va对应的pte
+    pte_t* pte = walk(pagetable, va, 0);
+    if (pte == 0) {
+      return -1;
+    }
+    if ((*pte & PTE_V) == 0) {
+      return -1;
+    }
+    if ((*pte & PTE_COW) == 0) {
+      return -1;
+    }
+    if ((*pte & PTE_U) == 0) {
+      return -1;
+    }
+    // 物理地址
+    uint64 pa = PTE2PA(*pte);
+    uint64 ka = (uint64) kalloc();
+    if (ka == 0) {
+      return -1;
+    } else {
+      // 复制pa到ka
+      memmove((char*)ka, (char*)pa, PGSIZE);
+      uint64 flags = PTE_FLAGS(*pte);
+      *pte = PA2PTE(ka) | flags | PTE_W;
+      *pte &= (~PTE_COW);
+      // 更新计数
+      kfree((void *)pa);
+
+      return 0;
+    }
+}
+
 // Copy from kernel to user.
 // Copy len bytes from src to virtual address dstva in a given page table.
 // Return 0 on success, -1 on error.
@@ -369,6 +403,22 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0)
       return -1;
+
+    // part 1 begin
+    pte_t* pte = walk(pagetable, va0, 0);
+    if (pte == 0) {
+      return -1;
+    }
+    // 只有在不可写时才调用cow
+    if ((*pte & PTE_W) == 0) {
+      if (cow(pagetable, va0) < 0) {
+        return -1;
+      }
+    }
+    // 更新pa0
+    pa0 = PTE2PA(*pte);
+    // part 1 end
+
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;

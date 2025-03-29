@@ -69,7 +69,7 @@ usertrap(void)
 
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else if(r_scause() == 15){
+  } else if(r_scause() == 15 || r_scause() == 13){
         uint64 va = PGROUNDDOWN(r_stval());
         pte_t* pte = walk(p->pagetable, va, 0);
         //determine whether pte is allcate by COW
