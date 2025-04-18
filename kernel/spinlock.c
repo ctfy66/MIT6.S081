@@ -64,6 +64,7 @@ acquire(struct spinlock *lk)
   push_off(); // disable interrupts to avoid deadlock.
   if(holding(lk))
     panic("acquire");
+  
 
 #ifdef LAB_LOCK
     __sync_fetch_and_add(&(lk->n), 1);
@@ -89,6 +90,7 @@ acquire(struct spinlock *lk)
 
   // Record info about lock acquisition for holding() and debugging.
   lk->cpu = mycpu();
+  
 }
 
 // Release the lock.
@@ -97,8 +99,10 @@ release(struct spinlock *lk)
 {
   if(!holding(lk))
     panic("release");
+  
 
   lk->cpu = 0;
+  
 
   // Tell the C compiler and the CPU to not move loads or stores
   // past this point, to ensure that all the stores in the critical

@@ -593,6 +593,7 @@ wakeup(void *chan)
 
   for(p = proc; p < &proc[NPROC]; p++) {
     acquire(&p->lock);
+    
     if(p->state == SLEEPING && p->chan == chan) {
       p->state = RUNNABLE;
     }
