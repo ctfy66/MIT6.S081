@@ -22,31 +22,48 @@
 #include "defs.h"
 #include "fs.h"
 #include "buf.h"
-// kernel/defs.h
+
+#define NBUCKET 13
+#undef NBUF
+#define NBUF (NBUCKET * 3)
 
 struct {
   struct spinlock lock;
-  struct spinlock bucket_lock[NBUCKET];
-  struct buf* buckets[NBUCKET];
   struct buf buf[NBUF];
-  // Linked list of all buffers, through prev/next.
-  // Sorted by how recently the buffer was used.
-  // head.next is most recent, head.prev is least.
 } bcache;
+
+struct bucket {
+  struct spinlock lock;
+  struct buf head;
+}hashtable[NBUCKET];
+
+int
+hash(uint dev, uint blockno)
+{
+  return blockno % NBUCKET;
+}
 
 void
 binit(void)
 {
-  
+  struct buf *b;
 
   initlock(&bcache.lock, "bcache");
 
-  // initialize hashtable of buffers
-  for (int i = 0; i < NBUCKET; i++) {
-    bcache.buckets[i] = 0;
-    initlock(&bcache.bucket_lock[i], "bcache_bucket"); 
+  for(b = bcache.buf; b < bcache.buf+NBUF; b++){
+    initsleeplock(&b->lock, "buffer");
   }
 
+  b = bcache.buf;
+  for (int i = 0; i < NBUCKET; i++) {
+    initlock(&hashtable[i].lock, "bcache_bucket");
+    for (int j = 0; j < NBUF / NBUCKET; j++) {
+      b->blockno = i;
+      b->next = hashtable[i].head.next;
+      hashtable[i].head.next = b;
+      b++;
+    }
+  }
 }
 
 // Look through buffer cache for block on device dev.
@@ -55,76 +72,99 @@ binit(void)
 static struct buf*
 bget(uint dev, uint blockno)
 {
+  // printf("dev: %d blockno: %d Status: ", dev, blockno);
   struct buf *b;
 
-  int hash = blockno % NBUCKET;
-  acquire(&bcache.bucket_lock[hash]);
+  int idx = hash(dev, blockno);
+  struct bucket* bucket = hashtable + idx;
+  acquire(&bucket->lock);
 
   // Is the block already cached?
-  for(b = bcache.buckets[blockno % NBUCKET]; b != 0; b = b->next){
+  for(b = bucket->head.next; b != 0; b = b->next){
     if(b->dev == dev && b->blockno == blockno){
       b->refcnt++;
-      b->time_stamp = ticks;
-      
-      release(&bcache.bucket_lock[hash]);
+      release(&bucket->lock);
       acquiresleep(&b->lock);
+      // printf("Cached %p\n", b);
       return b;
     }
   }
-  
 
   // Not cached.
-  // Recycle the least recently used (LRU) unused buffer.
-  acquire(&bcache.lock);
-  struct buf* lru = 0;
-  uint oldest_time = 0xffffffff;
-  for(b = bcache.buf; b <= bcache.buf + NBUF; b++){
-    
-    if(b->refcnt == 0 && b->time_stamp < oldest_time) {
-      lru = b;
-      oldest_time = b->time_stamp;
+  // First try to find in current bucket.
+  int min_time = 0x8fffffff;
+  struct buf* replace_buf = 0;
+
+  for(b = bucket->head.next; b != 0; b = b->next){
+    if(b->refcnt == 0 && b->timestamp < min_time) {
+      replace_buf = b;
+      min_time = b->timestamp;
     }
   }
-  if (lru) {
-      lru->dev = dev;
-      lru->blockno = blockno;
-      lru->valid = 0;
-      lru->refcnt = 1;
-      lru->time_stamp = ticks;
-
-      release(&bcache.lock);
-      
-      lru->next = bcache.buckets[hash];
-      bcache.buckets[hash] = lru;
-      
-      release(&bcache.bucket_lock[hash]);
-      acquiresleep(&lru->lock);
-      return lru;
+  if(replace_buf) {
+    // printf("Local %d %p\n", idx, replace_buf);
+    goto find;
   }
-  release(&bcache.lock);
-  release(&bcache.bucket_lock[hash]);
 
-  panic("bget: no buffers");
+  // Try to find in other bucket.
+  acquire(&bcache.lock);
+  refind:
+  for(b = bcache.buf; b < bcache.buf + NBUF; b++) {
+    if(b->refcnt == 0 && b->timestamp < min_time) {
+      replace_buf = b;
+      min_time = b->timestamp;
+    }
+  }
+  if (replace_buf) {
+    // remove from old bucket
+    int ridx = hash(replace_buf->dev, replace_buf->blockno);
+    acquire(&hashtable[ridx].lock);
+    if(replace_buf->refcnt != 0)  // be used in another bucket's local find between finded and acquire
+    {
+      release(&hashtable[ridx].lock);
+      goto refind;
+    }
+    struct buf *pre = &hashtable[ridx].head;
+    struct buf *p = hashtable[ridx].head.next;
+    while (p != replace_buf) {
+      pre = pre->next;
+      p = p->next;
+    }
+    pre->next = p->next;
+    release(&hashtable[ridx].lock);
+    // add to current bucket
+    replace_buf->next = hashtable[idx].head.next;
+    hashtable[idx].head.next = replace_buf;
+    release(&bcache.lock);
+    // printf("Global %d -> %d %p\n", ridx, idx, replace_buf);
+    goto find;
+  }
+  else {
+    panic("bget: no buffers");
+  }
+
+  find:
+  replace_buf->dev = dev;
+  replace_buf->blockno = blockno;
+  replace_buf->valid = 0;
+  replace_buf->refcnt = 1;
+  release(&bucket->lock);
+  acquiresleep(&replace_buf->lock);
+  return replace_buf;
 }
 
 // Return a locked buf with the contents of the indicated block.
-// bread function - fixed version
 struct buf*
 bread(uint dev, uint blockno)
 {
   struct buf *b;
 
   b = bget(dev, blockno);
-  
   if(!b->valid) {
-    
     virtio_disk_rw(b, 0);
     b->valid = 1;
-    
   }
-    return b;
-  
-  
+  return b;
 }
 
 // Write b's contents to disk.  Must be locked.
@@ -146,42 +186,31 @@ brelse(struct buf *b)
 
   releasesleep(&b->lock);
 
+  int idx = hash(b->dev, b->blockno);
+
+  acquire(&hashtable[idx].lock);
   b->refcnt--;
-  
   if (b->refcnt == 0) {
     // no one is waiting for it.
-    //remove buf form hashtable
-    b->time_stamp = ticks;
-    
-    acquire(&bcache.bucket_lock[b->blockno % NBUCKET]);
-    if (bcache.buckets[b->blockno % NBUCKET]->blockno == b->blockno && bcache.buckets[b->blockno % NBUCKET]->dev == b->dev) {
-        bcache.buckets[b->blockno % NBUCKET] = b->next;
-        b->prev = 0;
-        b->next = 0;
-    } else {
-        if (b->prev)  b->prev->next = b->next;
-        if (b->next) b->next->prev = b->prev;
-        b->prev = 0;
-        b->next = 0;
-    }
-    release(&bcache.bucket_lock[b->blockno % NBUCKET]);
+    b->timestamp = ticks;
   }
   
-  
+  release(&hashtable[idx].lock);
 }
 
 void
 bpin(struct buf *b) {
-  acquire(&bcache.lock);
+  int idx = hash(b->dev, b->blockno);
+  acquire(&hashtable[idx].lock);
   b->refcnt++;
-  release(&bcache.lock);
+  release(&hashtable[idx].lock);
 }
 
 void
 bunpin(struct buf *b) {
-  acquire(&bcache.lock);
+  int idx = hash(b->dev, b->blockno);
+  acquire(&hashtable[idx].lock);
   b->refcnt--;
-  release(&bcache.lock);
+  release(&hashtable[idx].lock);
 }
-
 
